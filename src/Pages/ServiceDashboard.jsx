@@ -1,5 +1,5 @@
 // src/Pages/ServiceDashboard.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { listAllTickets, setTicketStatus } from "../integrations/Core";
 import Confirm from "../components/Confirm";
 import { useI18n } from "../i18n/I18nProvider";
@@ -10,14 +10,17 @@ export default function ServiceDashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [busyId, setBusyId] = useState(null);
+  const mountedRef = useRef(true);
 
   async function load() {
     setErr(""); setLoading(true);
-    try { setRows(await listAllTickets()); }
-    catch (e) { setErr(e.message || "Error"); }
-    finally { setLoading(false); }
+    try { const data = await listAllTickets(); if (mountedRef.current) setRows(data || []); }
+    catch (e) { if (mountedRef.current) setErr(e.message || "Error"); }
+    finally { if (mountedRef.current) setLoading(false); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { mountedRef.current = true; load(); return () => { mountedRef.current = false; }; }, []);
 
   const stat = useMemo(() => {
     const total = rows.length;
@@ -32,13 +35,29 @@ export default function ServiceDashboard() {
 
   const changeStatus = async (id, next) => {
     setConfirm(null);
+    setBusyId(id);
     try { await setTicketStatus(id, next); await load(); }
     catch (e) { alert(e.message || "failed"); }
+    finally { setBusyId(null); }
   };
+
+  const displayedRows = useMemo(() => {
+    const ordered = [...rows].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    if (statusFilter === "all") return ordered;
+    return ordered.filter((r) => r.status === statusFilter);
+  }, [rows, statusFilter]);
 
   return (
     <div className="grid gap-6">
-      {err && <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 p-4">{err}</div>}
+      {err && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 p-4 flex items-start justify-between gap-4">
+          <div>
+            <div className="font-semibold text-sm">{t("error") || "Error"}</div>
+            <div className="text-sm">{err}</div>
+          </div>
+          <button className="btn btn-light" onClick={load}>{t("refresh")}</button>
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-5">
         <Kpi title={t("kpi_total")} value={stat.total} />
@@ -58,14 +77,32 @@ export default function ServiceDashboard() {
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
           <div className="text-[15px] font-semibold text-slate-900">{t("all_requests")}</div>
-          <button className="btn btn-ghost" onClick={load}>{t("refresh")}</button>
+          <div className="flex gap-3 items-center">
+            <label className="text-sm text-slate-600" htmlFor="status-filter">{t("filter") || "Filter"}</label>
+            <select
+              id="status-filter"
+              className="select select-bordered select-sm"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="all">{t("all") || "All"}</option>
+              <option value="received">{pretty(t, "received")}</option>
+              <option value="in_progress">{pretty(t, "in_progress")}</option>
+              <option value="on_hold">{pretty(t, "on_hold")}</option>
+              <option value="completed">{pretty(t, "completed")}</option>
+              <option value="cancelled">{pretty(t, "cancelled")}</option>
+            </select>
+            <button className="btn btn-ghost" onClick={load} disabled={loading}>
+              {loading ? t("loading") || "Loading" : t("refresh")}
+            </button>
+          </div>
         </div>
 
         {loading ? (
-          <div className="text-sm text-slate-600">Loading…</div>
-        ) : rows.length === 0 ? (
+          <div className="text-sm text-slate-600">{t("loading") || "Loading…"}</div>
+        ) : displayedRows.length === 0 ? (
           <div className="text-sm text-slate-500">{t("no_requests")}</div>
         ) : (
           <table className="table">
@@ -80,7 +117,7 @@ export default function ServiceDashboard() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {displayedRows.map((r) => (
                 <tr key={r.id}>
                   <td className="td">#{r.ticket_number}</td>
                   <td className="td">
@@ -92,12 +129,17 @@ export default function ServiceDashboard() {
                     <div className="text-xs text-slate-500">{r.attachment_type || "-"}</div>
                   </td>
                   <td className="td"><StatusBadge t={t} s={r.status} /></td>
-                  <td className="td">{new Date(r.created_at).toLocaleString()}</td>
+                  <td className="td">{r.created_at ? new Date(r.created_at).toLocaleString() : "-"}</td>
                   <td className="td">
                     <div className="flex gap-2">
                       {nextActions(r.status).map((n) => (
-                        <button key={n} className="btn btn-ghost" onClick={() => setConfirm({ id: r.id, next: n })}>
-                          {t("set")} {pretty(t, n)}
+                        <button
+                          key={n}
+                          className="btn btn-ghost"
+                          onClick={() => setConfirm({ id: r.id, next: n })}
+                          disabled={busyId === r.id}
+                        >
+                          {busyId === r.id ? t("processing") || "Processing" : `${t("set")} ${pretty(t, n)}`}
                         </button>
                       ))}
                     </div>
