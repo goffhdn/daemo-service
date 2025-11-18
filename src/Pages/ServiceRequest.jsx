@@ -338,7 +338,7 @@ export default function ServiceRequest() {
               </Field>
             </Section>
 
-            <Section title={t("attach_info") || "Attachment information">
+            <Section title={t("attach_info") || "Attachment information"}>
               <Field label={t("attach_type_required") || "Attachment type"} required error={errors.attachment_type}>
                 <input
                   ref={(node) => (inputRefs.current.attachment_type = node)}
@@ -442,7 +442,7 @@ export default function ServiceRequest() {
               </Field>
             </Section>
 
-            <Section title={t("failure_details") || "Failure / symptom details">
+            <Section title={t("failure_details") || "Failure / symptom details"}>
               <Field label={t("symptom_required") || "Main symptom"} required error={errors.symptom}>
                 <textarea
                   ref={(node) => (inputRefs.current.symptom = node)}
@@ -493,7 +493,7 @@ export default function ServiceRequest() {
               </Field>
             </Section>
 
-            <Section title={t("attachments_title") || "Attachments">
+            <Section title={t("attachments_title") || "Attachments"}>
               <div className="text-xs text-slate-500 mb-3">
                 {(t("per_file_limit") || "Per-file size limit") + ": 15MB"} · Up to {MAX_FILES} files
               </div>
