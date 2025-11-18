@@ -1,19 +1,271 @@
+diff --git a/src/App.jsx b/src/App.jsx
+index a11e789e2403f0ce470248b5058454c172e180a5..b25946d03866d7b3acc0c66b5569837abfd73fee 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -1,33 +1,34 @@
+ // src/App.jsx
+ import { NavLink, Outlet, useLocation } from "react-router-dom";
+ import { LayoutDashboard, FileText, Globe, LogIn, LogOut } from "lucide-react";
+ import { useState } from "react";
+-import { useAuth } from "./auth/AuthProvider";
++import { useAuth } from "./auth/AuthContext";
+ import LoginDialog from "./components/LoginDialog";
+ import { ToastProvider } from "./components/Toast";
+-import { I18nProvider, useI18n } from "./i18n/I18nProvider";
++import { I18nProvider } from "./i18n/I18nProvider";
++import { useI18n } from "./i18n/I18nContext";
+ 
+ export default function App() {
+   return (
+     <I18nProvider>
+       <ToastProvider>
+         <div className="app-shell">
+           <div className="app-grid">
+             <Sidebar />
+             <MainPane />
+           </div>
+         </div>
+       </ToastProvider>
+     </I18nProvider>
+   );
+ }
+ 
+ function Sidebar() {
+   const { user, profile, signOut } = useAuth();
+   const [showLogin, setShowLogin] = useState(false);
+   const { t } = useI18n();
+ 
+   return (
+     <aside className="sidebar">
+       <div className="side-inner">
+         <div className="side-logo">
+
+diff --git a/src/Pages/ServiceDashboard.jsx b/src/Pages/ServiceDashboard.jsx
+index 0c8ecc2073f336f272ba6bfee8064b94db2f6145..647524bcb589be364d6426740a6f9312fc2c8a9a 100644
+--- a/src/Pages/ServiceDashboard.jsx
++++ b/src/Pages/ServiceDashboard.jsx
+@@ -1,45 +1,52 @@
+ // src/Pages/ServiceDashboard.jsx
+ import { useEffect, useMemo, useState } from "react";
+ import { listAllTickets, setTicketStatus } from "../integrations/Core";
+ import Confirm from "../components/Confirm";
+-import { useI18n } from "../i18n/I18nProvider";
++import { useI18n } from "../i18n/I18nContext";
+ 
+ export default function ServiceDashboard() {
+   const { t } = useI18n();
+   const [rows, setRows] = useState([]);
+   const [loading, setLoading] = useState(true);
+   const [err, setErr] = useState("");
+   const [confirm, setConfirm] = useState(null);
+ 
+-  async function load() {
++  async function load({ signal } = {}) {
+     setErr(""); setLoading(true);
+-    try { setRows(await listAllTickets()); }
+-    catch (e) { setErr(e.message || "Error"); }
+-    finally { setLoading(false); }
++    try {
++      const next = await listAllTickets();
++      if (!signal?.aborted) setRows(next);
++    }
++    catch (e) { if (!signal?.aborted) setErr(e.message || "Error"); }
++    finally { if (!signal?.aborted) setLoading(false); }
+   }
+-  useEffect(() => { load(); }, []);
++  useEffect(() => {
++    const controller = new AbortController();
++    load({ signal: controller.signal });
++    return () => controller.abort();
++  }, []);
+ 
+   const stat = useMemo(() => {
+     const total = rows.length;
+     const rec = rows.filter((r) => r.status === "received").length;
+     const prog = rows.filter((r) => r.status === "in_progress").length;
+     const done = rows.filter((r) => r.status === "completed").length;
+     const hold = rows.filter((r) => r.status === "on_hold").length;
+     const cancel = rows.filter((r) => r.status === "cancelled").length;
+     const completion = total ? Math.round((done / (total - cancel || 1)) * 100) : 0;
+     return { total, rec, prog, done, hold, cancel, completion };
+   }, [rows]);
+ 
+   const changeStatus = async (id, next) => {
+     setConfirm(null);
+     try { await setTicketStatus(id, next); await load(); }
+     catch (e) { alert(e.message || "failed"); }
+   };
+ 
+   return (
+     <div className="grid gap-6">
+       {err && <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 p-4">{err}</div>}
+ 
+       <div className="grid gap-4 md:grid-cols-5">
+         <Kpi title={t("kpi_total")} value={stat.total} />
+         <Kpi title={t("kpi_received")} value={stat.rec} />
+
+diff --git a/src/Pages/ServiceRequest.jsx b/src/Pages/ServiceRequest.jsx
+index af96bf44821707b3f18b733f814da8176c305c30..671ca65b8bb827f036ac91fa91eea8b117997be5 100644
+--- a/src/Pages/ServiceRequest.jsx
++++ b/src/Pages/ServiceRequest.jsx
+@@ -1,58 +1,62 @@
+ // src/Pages/ServiceRequest.jsx
+ import { useEffect, useMemo, useState } from "react";
+-import { useAuth } from "../auth/AuthProvider";
+-import { useToast } from "../components/Toast";
+-import { useI18n } from "../i18n/I18nProvider";
++import { useAuth } from "../auth/AuthContext";
++import { useToast } from "../components/ToastContext";
++import { useI18n } from "../i18n/I18nContext";
+ import { createTicket, getNextTicketNumber, uploadAttachment } from "../integrations/Core";
+ 
+ const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB per file
+ 
+ const INITIAL_FORM = {
+   country: "",
+   customer_name: "",
+   contact: "",
+   attachment_type: "",
+   attachment_model: "",
+   attachment_serial: "",
+   installed_at: "",
+   failed_at: "",
+   symptom: "",
+ };
+ 
+ export default function ServiceRequest() {
+   const { t } = useI18n();
+   const { user } = useAuth();
+   const toast = useToast();
+ 
+   const [ticketNumber, setTicketNumber] = useState(null);
+   const [form, setForm] = useState(INITIAL_FORM);
+   const [files, setFiles] = useState([]); // File[]
+   const [submitting, setSubmitting] = useState(false);
+ 
+   useEffect(() => {
+-    getNextTicketNumber().then(setTicketNumber).catch(() => setTicketNumber(null));
++    let alive = true;
++    getNextTicketNumber()
++      .then((num) => alive && setTicketNumber(num))
++      .catch(() => alive && setTicketNumber(null));
++    return () => { alive = false; };
+   }, []);
+ 
+   const requiredLeft = useMemo(() => {
+     return ["customer_name", "contact", "attachment_type", "attachment_model", "symptom"]
+       .filter((k) => !form[k]?.trim()).length;
+   }, [form]);
+ 
+   const onChange = (key) => (e) => setForm((s) => ({ ...s, [key]: e.target.value }));
+ 
+   const onFiles = (e) => {
+     const picked = Array.from(e.target.files || []);
+     if (picked.length === 0) return;
+ 
+     const accepted = [];
+     let rejected = false;
+     picked.forEach((f) => {
+       if (f.size > MAX_FILE_SIZE) {
+         rejected = true;
+         return;
+       }
+       accepted.push(f);
+     });
+ 
+     if (rejected) toast.push(t("some_files_rejected"), "error");
+     if (accepted.length > 0) setFiles((s) => [...s, ...accepted]);
+@@ -79,51 +83,52 @@ export default function ServiceRequest() {
+         const url = await uploadAttachment(f);
+         uploaded.push(url);
+       }
+ 
+       await createTicket({
+         ticket_number: ticketNumber,
+         country: form.country.trim() || null,
+         customer_name: form.customer_name.trim(),
+         contact: form.contact.trim(),
+         attachment_type: form.attachment_type.trim(),
+         attachment_model: form.attachment_model.trim(),
+         attachment_serial: form.attachment_serial.trim() || null,
+         installed_at: form.installed_at || null,
+         failed_at: form.failed_at || null,
+         symptom: form.symptom.trim(),
+         attachments: uploaded,
+         status: "received",
+         created_by: user.email,
+       });
+ 
+       toast.push(t("submitted_ok"), "success");
+       setForm(INITIAL_FORM);
+       setFiles([]);
+       setTicketNumber(await getNextTicketNumber());
+     } catch (err) {
+-      toast.push(err.message || "Error", "error");
++      const message = err?.message || t("unexpected_error") || "Error";
++      toast.push(message, "error");
+     } finally {
+       setSubmitting(false);
+     }
+   };
+ 
+   return (
+     <div className="grid gap-6">
+       <form className="grid gap-6" onSubmit={handleSubmit}>
+         <div className="rounded-2xl border border-slate-200 bg-white p-6">
+           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+             <div>
+               <div className="text-[15px] font-semibold text-slate-900">{t("head_request")}</div>
+               <div className="text-xs text-slate-500">{t("head_sub_request")}</div>
+             </div>
+             <div className="text-xs text-slate-500">
+               {t("required_left")}: <span className="font-semibold text-slate-900">{requiredLeft}</span>
+             </div>
+           </div>
+ 
+           {!user && (
+             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 text-amber-800 p-3 text-sm">
+               {t("info_need_signin")}
+             </div>
+           )}
+ 
+diff --git a/src/auth/AuthContext.js b/src/auth/AuthContext.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..14f1bd9cdcba22e963b890beaa074906ed7ad507
+--- /dev/null
++++ b/src/auth/AuthContext.js
+@@ -0,0 +1,10 @@
++import { createContext, useContext } from "react";
++
++export const AuthCtx = createContext(null);
++AuthCtx.displayName = "AuthCtx";
++
++export function useAuth() {
++  const ctx = useContext(AuthCtx);
++  if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
++  return ctx;
++}
+
 diff --git a/src/auth/AuthProvider.jsx b/src/auth/AuthProvider.jsx
-index b8176da80ef348c563536d62cd2767375b40d240..b41c09bd501fb95c19cdfeecd7fd9858626219fe 100644
+index b41c09bd501fb95c19cdfeecd7fd9858626219fe..d851ce6dd414e5b62734fbd49b7ea6569883ba65 100644
 --- a/src/auth/AuthProvider.jsx
 +++ b/src/auth/AuthProvider.jsx
-@@ -2,49 +2,81 @@
- import { createContext, useContext, useEffect, useMemo, useState } from "react";
+@@ -1,82 +1,78 @@
+ // src/auth/AuthProvider.jsx
+-import { createContext, useContext, useEffect, useMemo, useState } from "react";
++import { useCallback, useEffect, useMemo, useState } from "react";
  import { supabase, getCurrentUser, getMyProfile, signOut as coreSignOut } from "../integrations/Core";
- 
- const AuthCtx = createContext(null);
+-
+-const AuthCtx = createContext(null);
++import { AuthCtx } from "./AuthContext";
  
  export function AuthProvider({ children }) {
    const [user, setUser] = useState(null);
    const [profile, setProfile] = useState(null);
    const [ready, setReady] = useState(false);
  
-   async function refresh() {
+-  async function refresh() {
++  const refresh = useCallback(async () => {
      try {
        const u = await getCurrentUser();
        setUser(u);
@@ -26,64 +278,502 @@ index b8176da80ef348c563536d62cd2767375b40d240..b41c09bd501fb95c19cdfeecd7fd9858
      } finally {
        setReady(true);
      }
-   }
+-  }
++  }, []);
  
-+  // 이메일 매직 링크 등으로 돌아왔을 때 세션 교환 처리
-+  async function handleAuthCallback() {
-+    const url = new URL(window.location.href);
-+    const hasCode = url.searchParams.get("code");
-+    const hasAccessToken = url.hash.includes("access_token");
-+    if (!hasCode && !hasAccessToken) return;
-+
-+    const { error } = await supabase.auth.exchangeCodeForSession(url.href);
-+    if (error) throw error;
-+
-+    // 주소창 정리 (뒤로가기 시 재교환 방지)
-+    url.searchParams.delete("code");
-+    url.searchParams.delete("state");
-+    url.searchParams.delete("token_hash");
-+    url.hash = "";
-+    window.history.replaceState({}, document.title, url.toString());
-+  }
-+
+   // 이메일 매직 링크 등으로 돌아왔을 때 세션 교환 처리
+-  async function handleAuthCallback() {
++  const handleAuthCallback = useCallback(async () => {
+     const url = new URL(window.location.href);
+     const hasCode = url.searchParams.get("code");
+     const hasAccessToken = url.hash.includes("access_token");
+     if (!hasCode && !hasAccessToken) return;
+ 
+     const { error } = await supabase.auth.exchangeCodeForSession(url.href);
+     if (error) throw error;
+ 
+     // 주소창 정리 (뒤로가기 시 재교환 방지)
+     url.searchParams.delete("code");
+     url.searchParams.delete("state");
+     url.searchParams.delete("token_hash");
+     url.hash = "";
+     window.history.replaceState({}, document.title, url.toString());
+-  }
++  }, []);
+ 
    useEffect(() => {
--    refresh();
--    const { data: sub } = supabase.auth.onAuthStateChange(() => refresh());
--    return () => sub?.subscription?.unsubscribe();
-+    let unsub = null;
+     let unsub = null;
+ 
+     (async () => {
+       try {
+         await handleAuthCallback();
+       } catch (e) {
+         console.error("Auth callback 처리 오류", e);
+       }
+ 
+       await refresh();
+       const { data: sub } = supabase.auth.onAuthStateChange(() => refresh());
+       unsub = sub?.subscription?.unsubscribe || null;
+     })();
+ 
+     return () => {
+       if (typeof unsub === "function") unsub();
+     };
+-  }, []);
++  }, [handleAuthCallback, refresh]);
 +
-+    (async () => {
-+      try {
-+        await handleAuthCallback();
-+      } catch (e) {
-+        console.error("Auth callback 처리 오류", e);
-+      }
-+
-+      await refresh();
-+      const { data: sub } = supabase.auth.onAuthStateChange(() => refresh());
-+      unsub = sub?.subscription?.unsubscribe || null;
-+    })();
-+
-+    return () => {
-+      if (typeof unsub === "function") unsub();
-+    };
-   }, []);
++  const signOut = useCallback(async () => {
++    await coreSignOut();
++    await refresh();
++  }, [refresh]);
  
    const value = useMemo(() => ({
      user,
      profile,
      ready,
-     signOut: async () => {
-       await coreSignOut();
-       await refresh();
-     },
-   }), [user, profile, ready]);
+-    signOut: async () => {
+-      await coreSignOut();
+-      await refresh();
+-    },
+-  }), [user, profile, ready]);
++    signOut,
++    refresh,
++  }), [user, profile, ready, signOut, refresh]);
  
    return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
  }
+-
+-export function useAuth() {
+-  const ctx = useContext(AuthCtx);
+-  if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
+-  return ctx;
+-}
+
+diff --git a/src/auth/Guards.jsx b/src/auth/Guards.jsx
+index 1cd7a03ba51a3469ec4f8c32342087a183b1ebb8..376cf8d9154734aa23d4fae3191e0652c1adef1a 100644
+--- a/src/auth/Guards.jsx
++++ b/src/auth/Guards.jsx
+@@ -1,18 +1,22 @@
+ // src/auth/Guards.jsx
+ import { Navigate } from "react-router-dom";
+-import { useAuth } from "./AuthProvider";
++import { useAuth } from "./AuthContext";
  
- export function useAuth() {
-   const ctx = useContext(AuthCtx);
-   if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
-   return ctx;
+ export function RequireAuth({ children }) {
+   const { ready, user } = useAuth();
+-  if (!ready) return <div className="container-narrow py-10">Loading...</div>;
++  if (!ready) return <Loading />;
+   if (!user) return <Navigate to="/request" replace />;
+   return children;
  }
+ 
+ export function RequireRole({ children, roles = [] }) {
+   const { ready, user, profile } = useAuth();
+-  if (!ready) return <div className="container-narrow py-10">Loading...</div>;
++  if (!ready) return <Loading />;
+   if (!user) return <Navigate to="/request" replace />;
+   if (!roles.includes(profile?.role_type)) return <Navigate to="/my" replace />;
+   return children;
+ }
++
++function Loading() {
++  return <div className="container-narrow py-10 text-sm text-slate-600">Loading…</div>;
++}
+
+diff --git a/src/components/Toast.jsx b/src/components/Toast.jsx
+index c1fe2fd26885d639189a266da3029017a93cd8d6..1c1c582485eb73ba09b534c7d703308473571c3f 100644
+--- a/src/components/Toast.jsx
++++ b/src/components/Toast.jsx
+@@ -1,44 +1,60 @@
+ // src/components/Toast.jsx
+-import React, { createContext, useContext, useMemo, useState, useCallback } from "react";
+-
+-const ToastCtx = createContext(null);
++import React, { useMemo, useState, useCallback, useEffect, useRef } from "react";
++import { ToastCtx } from "./ToastContext";
+ 
+ export function ToastProvider({ children }) {
+   const [list, setList] = useState([]); // { id, msg, kind }
++  const timers = useRef(new Map());
+ 
+   const push = useCallback((msg, kind = "info", ms = 2400) => {
+     const id = Math.random().toString(36).slice(2);
+     setList((s) => [...s, { id, msg, kind }]);
+-    setTimeout(() => setList((s) => s.filter((t) => t.id !== id)), ms);
++    const timer = setTimeout(() => {
++      timers.current.delete(id);
++      setList((s) => s.filter((t) => t.id !== id));
++    }, ms);
++    timers.current.set(id, timer);
++  }, []);
++
++  const remove = useCallback((id) => {
++    const timer = timers.current.get(id);
++    if (timer) clearTimeout(timer);
++    timers.current.delete(id);
++    setList((s) => s.filter((t) => t.id !== id));
+   }, []);
+ 
+-  const value = useMemo(() => ({ push }), [push]);
++  useEffect(() => () => {
++    timers.current.forEach((timer) => clearTimeout(timer));
++    timers.current.clear();
++  }, []);
++
++  const value = useMemo(() => ({ push, remove }), [push, remove]);
+ 
+   return (
+     <ToastCtx.Provider value={value}>
+       {children}
+       <div className="fixed z-50 bottom-4 right-4 grid gap-2">
+         {list.map((t) => (
+           <div
+             key={t.id}
+             className={`rounded-xl border px-3 py-2 text-sm shadow-sm bg-white ${
+               t.kind === "error"
+                 ? "border-rose-200 text-rose-700"
+                 : t.kind === "success"
+                 ? "border-emerald-200 text-emerald-700"
+                 : "border-slate-200 text-slate-700"
+             }`}
+           >
+-            {t.msg}
++            <div className="flex items-start gap-2">
++              <span className="flex-1">{t.msg}</span>
++              <button type="button" className="text-xs text-slate-500" onClick={() => remove(t.id)}>
++                ×
++              </button>
++            </div>
+           </div>
+         ))}
+       </div>
+     </ToastCtx.Provider>
+   );
+ }
+ 
+-export function useToast() {
+-  const ctx = useContext(ToastCtx);
+-  if (!ctx) throw new Error("useToast must be used within <ToastProvider>");
+-  return ctx;
+-}
+
+diff --git a/src/components/ToastContext.js b/src/components/ToastContext.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..caa91a0dad29fb6f98bd03b1920b8f1fa406c967
+--- /dev/null
++++ b/src/components/ToastContext.js
+@@ -0,0 +1,10 @@
++import { createContext, useContext } from "react";
++
++export const ToastCtx = createContext(null);
++ToastCtx.displayName = "ToastCtx";
++
++export function useToast() {
++  const ctx = useContext(ToastCtx);
++  if (!ctx) throw new Error("useToast must be used within <ToastProvider>");
++  return ctx;
++}
+
+diff --git a/src/i18n/I18nContext.js b/src/i18n/I18nContext.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd1b19e24ad239f638179003e1db1ba0d60b9438
+--- /dev/null
++++ b/src/i18n/I18nContext.js
+@@ -0,0 +1,10 @@
++import { createContext, useContext } from "react";
++
++export const I18nCtx = createContext(null);
++I18nCtx.displayName = "I18nCtx";
++
++export function useI18n() {
++  const ctx = useContext(I18nCtx);
++  if (!ctx) throw new Error("useI18n must be used within <I18nProvider>");
++  return ctx;
++}
+
+diff --git a/src/i18n/I18nProvider.jsx b/src/i18n/I18nProvider.jsx
+index 979f73cabd8dac214b5961d0768ebbb0d5791a49..0cd2282cf3ae54aca631e03e43a3af81d9c1ed3f 100644
+--- a/src/i18n/I18nProvider.jsx
++++ b/src/i18n/I18nProvider.jsx
+@@ -1,30 +1,31 @@
+ // src/i18n/I18nProvider.jsx
+-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
++import React, { useCallback, useEffect, useMemo, useState } from "react";
+ import { STR } from "./strings";
+-
+-const I18nCtx = createContext(null);
++import { I18nCtx } from "./I18nContext";
+ const KEY = "lang";
+ 
+ export function I18nProvider({ children }) {
+-  const [lang, setLang] = useState(() => localStorage.getItem(KEY) || "en");
++  const [lang, setLang] = useState(() => {
++    try {
++      return localStorage.getItem(KEY) || "en";
++    } catch {
++      return "en";
++    }
++  });
+ 
+   useEffect(() => {
+-    localStorage.setItem(KEY, lang);
++    try {
++      localStorage.setItem(KEY, lang);
++    } catch { /* ignore */ }
+     document.documentElement.lang = lang;
+   }, [lang]);
+ 
+-  const t = (k, vars) => {
++  const t = useCallback((k, vars) => {
+     const base = STR[lang]?.[k] ?? STR.en[k] ?? k;
+     if (!vars) return base;
+     return Object.entries(vars).reduce((s, [key, val]) => s.replaceAll(`{{${key}}}`, String(val)), base);
+-  };
++  }, [lang]);
+ 
+-  const value = useMemo(() => ({ lang, setLang, t }), [lang]);
++  const value = useMemo(() => ({ lang, setLang, t }), [lang, t]);
+   return <I18nCtx.Provider value={value}>{children}</I18nCtx.Provider>;
+ }
+-
+-export function useI18n() {
+-  const ctx = useContext(I18nCtx);
+-  if (!ctx) throw new Error("useI18n must be used within <I18nProvider>");
+-  return ctx;
+-}
+
+
+diff --git a/src/integrations/Core.js b/src/integrations/Core.js
+index 0cdb592257ddf376654383062f9539bb51ec2efb..2a797d9e25371d2721be5f37b63516933840d0d7 100644
+--- a/src/integrations/Core.js
++++ b/src/integrations/Core.js
+@@ -94,51 +94,53 @@ export async function ensureMyProfile(defaults = {}) {
+   const user = auth?.user;
+   if (!user) return null;
+ 
+   const { data, error } = await supabase
+     .from("profiles")
+     .upsert(
+       [{ id: user.id, email: user.email, ...defaults }],
+       { onConflict: "id", ignoreDuplicates: true }
+     )
+     .select()
+     .single();
+ 
+   if (error) throw error;
+   return data;
+ }
+ 
+ /* =========================
+    TICKETS
+    ========================= */
+ // 다음 접수번호: RPC가 있으면 사용, 없으면 fallback
+ export async function getNextTicketNumber() {
+   try {
+     const { data, error } = await supabase.rpc("get_next_ticket_number");
+     if (error) throw error;
+     if (typeof data === "number") return data;
+-  } catch (_) { /* ignore */ }
++  } catch (e) {
++    console.warn("Falling back to manual ticket number lookup", e?.message || e);
++  }
+   const { data: rows, error: e2 } = await supabase
+     .from("tickets")
+     .select("ticket_number")
+     .order("ticket_number", { ascending: false })
+     .limit(1);
+   if (e2) throw e2;
+   return (rows?.[0]?.ticket_number || 1000) + 1;
+ }
+ 
+ // 첨부 업로드 (Storage bucket: 'attachments')
+ export async function uploadAttachment(file) {
+   const bucket = "attachments";
+   const now = new Date();
+   const ymd = now.toISOString().slice(0, 10);
+   const rand = Math.random().toString(36).slice(2, 10);
+   const path = `${ymd}/${rand}-${encodeURIComponent(file.name)}`;
+ 
+   const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+     upsert: true,
+     cacheControl: "3600",
+   });
+   if (upErr) throw upErr;
+ 
+   const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+   return data.publicUrl;
+
+diff --git a/src/main.jsx b/src/main.jsx
+index 016439d1abed9a986399ffa6965b4a74a960ca64..60007070944372d7eefe3a317e7b53c4f789f1c9 100644
+--- a/src/main.jsx
++++ b/src/main.jsx
+@@ -1,72 +1,73 @@
+ // src/main.jsx
+ import React, { useEffect, useState, Suspense, lazy } from "react";
+ import ReactDOM from "react-dom/client";
+ import "./index.css";
+ import ErrorOverlay from "./components/ErrorOverlay.jsx";
+ 
+ /**
+  * 진단 부팅 모드 + AuthProvider 래핑
+  * - App.jsx / react-router-dom / AuthProvider 모두 동적 import
+  * - 어느 단계에서 실패해도 화면에 빨간 박스로 원인 표시
+  */
+ 
+-function Boot() {
++export function Boot() {
+   const [AppComp, setAppComp] = useState(null);
+   const [appErr, setAppErr] = useState(null);
+ 
+   useEffect(() => {
+     import("./App.jsx")
+       .then((m) => setAppComp(() => m.default))
+       .catch((e) => setAppErr(e));
+   }, []);
+ 
+   useEffect(() => {
+     const onErr = (e) => console.error("window.error:", e.error || e.message || e);
+     const onRej = (e) => console.error("unhandledrejection:", e.reason || e);
+     window.addEventListener("error", onErr);
+     window.addEventListener("unhandledrejection", onRej);
+     return () => {
+       window.removeEventListener("error", onErr);
+       window.removeEventListener("unhandledrejection", onRej);
+     };
+   }, []);
+ 
+   if (appErr) {
+     return (
+       <ErrorOverlay
+         title="App.jsx를 불러오지 못했습니다"
+         message={appErr.message || appErr}
+         stack={appErr.stack}
+       />
+     );
+   }
+   if (!AppComp) return <StatusBox>Booting… (App.jsx 불러오는 중)</StatusBox>;
+   return <AppWithDeps AppComp={AppComp} />;
+ }
+ 
+-function AppWithDeps({ AppComp }) {
++export function AppWithDeps({ AppComp }) {
++  const AppComponent = AppComp;
+   const [router, setRouter] = useState(null);
+   const [routerErr, setRouterErr] = useState(null);
+ 
+   const [AuthProvider, setAuthProvider] = useState(null);
+   const [authErr, setAuthErr] = useState(null);
+ 
+   // react-router-dom 불러오기 (ESM)
+   useEffect(() => {
+     import("react-router-dom")
+       .then((mod) => setRouter(mod))
+       .catch((e) => setRouterErr(e));
+   }, []);
+ 
+   // AuthProvider 불러오기 (ESM)
+   useEffect(() => {
+     import("./auth/AuthProvider.jsx")
+       .then((m) => setAuthProvider(() => m.AuthProvider))
+       .catch((e) => setAuthErr(e));
+   }, []);
+ 
+   if (routerErr) {
+     return (
+       <ErrorOverlay
+         title="react-router-dom을 불러오지 못했습니다"
+         message={routerErr.message || routerErr}
+@@ -76,82 +77,86 @@ function AppWithDeps({ AppComp }) {
+   }
+   if (authErr) {
+     return (
+       <ErrorOverlay
+         title="AuthProvider를 불러오지 못했습니다"
+         message={authErr.message || authErr}
+         stack={authErr.stack}
+       />
+     );
+   }
+   if (!router) return <StatusBox>Routing 라이브러리 불러오는 중…</StatusBox>;
+   if (!AuthProvider) return <StatusBox>AuthProvider 불러오는 중…</StatusBox>;
+ 
+   const { BrowserRouter, Routes, Route, Navigate } = router;
+ 
+   const ServiceRequest = lazyWrap(() => import("./Pages/ServiceRequest.jsx"), "ServiceRequest.jsx");
+   const MyRequests = lazyWrap(() => import("./Pages/MyRequests.jsx"), "MyRequests.jsx");
+   const ServiceDashboard = lazyWrap(() => import("./Pages/ServiceDashboard.jsx"), "ServiceDashboard.jsx");
+ 
+   return (
+     <RenderCatcher>
+       <AuthProvider>
+         <Suspense fallback={<StatusBox>페이지 불러오는 중…</StatusBox>}>
+           <BrowserRouter>
+             <Routes>
+-              <Route path="/" element={<AppComp />}>
++              <Route path="/" element={<AppComponent />}>
+                 <Route index element={<ServiceRequest />} />
+                 <Route path="request" element={<ServiceRequest />} />
+                 <Route path="my" element={<MyRequests />} />
+                 <Route path="dashboard" element={<ServiceDashboard />} />
+                 <Route path="*" element={<Navigate to="/" replace />} />
+               </Route>
+             </Routes>
+           </BrowserRouter>
+         </Suspense>
+       </AuthProvider>
+     </RenderCatcher>
+   );
+ }
+ 
+ function lazyWrap(loader, label) {
+   return lazy(async () => {
+     try {
+       const m = await loader();
+       return m;
+     } catch (e) {
+-      throw new Error(`${label} import 실패: ${e.message || e}`);
++      const msg = `${label} import 실패: ${e.message || e}`;
++      console.error(msg, e);
++      throw new Error(msg);
+     }
+   });
+ }
+ 
+-class RenderCatcher extends React.Component {
++export class RenderCatcher extends React.Component {
+   constructor(p) { super(p); this.state = { err: null }; }
+   static getDerivedStateFromError(err) { return { err }; }
+   componentDidCatch(err, info) { console.error("Render error:", err, info); }
+   render() {
+     if (this.state.err) {
+       return (
+         <ErrorOverlay
+           title="화면 렌더링 중 오류가 발생했습니다"
+           message={this.state.err.message || this.state.err}
+           stack={this.state.err.stack}
+         />
+       );
+     }
+     return this.props.children;
+   }
+ }
+ 
+-function StatusBox({ children }) {
++export function StatusBox({ children }) {
+   return (
+     <div style={{
+       maxWidth: 1000, margin: "24px auto", padding: 16, borderRadius: 12,
+       border: "1px solid #e5e7eb", background: "#f8fafc", color: "#111827",
+       fontFamily: "ui-sans-serif, system-ui"
+     }}>
+       {children}
+     </div>
+   );
+ }
+ 
+ ReactDOM.createRoot(document.getElementById("root")).render(<Boot />);
++
++export default Boot;
+
+
+
